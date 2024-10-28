@@ -11,6 +11,7 @@ import libnum
 import numpy as np
 import pandas as pd
 import random
+import torch
 
 # pycryptodomex library functions
 from Cryptodome.PublicKey import ECC
@@ -27,6 +28,11 @@ from util.crypto.secretsharing import secret_int_to_points, points_to_secret_int
 
 from sklearn.neural_network import MLPClassifier
 
+# Modified : to compare with HARVEST scheme
+from util.load_data import load_data
+from util.target_network import Net
+from util.utils import train, test, DEVICE
+
 # The PPFL_TemplateClientAgent class inherits from the base Agent class.
 class SA_ClientAgent(Agent):
 
@@ -37,7 +43,7 @@ class SA_ClientAgent(Agent):
     def __init__(self, id, name, type,
                  iterations=4,
                  key_length=32,  
-                 num_clients=128,
+                 num_clients=60,
                  neighborhood_size=1,
                  debug_mode=0,
                  random_state=None,
@@ -51,6 +57,10 @@ class SA_ClientAgent(Agent):
 
         # Base class init
         super().__init__(id, name, type, random_state)
+
+        # Load train, test data by "load_data" method
+        self.train_data, self.test_data, self.num_examples = load_data(id)
+        self.network = Net().to(DEVICE)
 
         # Iteration counter
         self.no_of_iterations = iterations
@@ -77,6 +87,7 @@ class SA_ClientAgent(Agent):
         self.c = c
         self.m = m
 
+        '''
         # pick local training data
         self.prng = np.random.Generator(np.random.SFC64())
         obv_per_iter = self.nk #math.floor(X_train.shape[0]/self.num_clients)
@@ -109,7 +120,7 @@ class SA_ClientAgent(Agent):
             # Pull together the current local training set.
             self.trainX.append(X_train[slice].copy())
             self.trainY.append(y_train[slice].copy())
-
+        '''
 
         # Set logger
         self.logger = logging.getLogger("Log")
@@ -177,7 +188,6 @@ class SA_ClientAgent(Agent):
                              'CROSSCHECK': pd.Timedelta(0),
                              'RECONSTRUCTION': pd.Timedelta(0),
                              }
-
 
         # State flag
         self.setup_complete = False
@@ -292,6 +302,31 @@ class SA_ClientAgent(Agent):
 
         dt_protocol_start = pd.Timestamp('now')
 
+        # Train local data same as HARVEST
+        # Original code is commented out
+       
+        # Update the model from received global model
+        if self.global_coefs is not None:
+            network_dict = self.network.state_dict()
+            global_model = self.global_coefs
+
+            for layer in network_dict:
+                layer_flatten_size = network_dict[layer].cpu().view(-1).size(dim=0)
+                layer_to_download = torch.tensor(global_model[:layer_flatten_size], dtype=torch.float32).view(network_dict[layer].size()).to(DEVICE)
+                network_dict[layer] = layer_to_download
+                global_model = global_model[layer_flatten_size:]
+
+            self.network.load_state_dict(network_dict)
+
+        # Training process in HARVEST
+        # Results are converted to 1d numpy array and packed into client message
+        train(self.network, self.train_data, 1, device=DEVICE)
+        model_dict = self.network.state_dict()
+        float_vec = np.array([])
+        for layer in model_dict:
+            float_vec = np.concatenate((float_vec, np.array(model_dict[layer].cpu().view(-1))))
+
+        '''
         # train local data
         mlp = MLPClassifier()
         #print("CURRENT ITERATION")
@@ -334,12 +369,9 @@ class SA_ClientAgent(Agent):
             float_vec = np.concatenate((float_vec,np.array(mlp.intercepts_[z]).flatten()))
             #print("fv3: ", len(float_vec))
 
-
-        
         float_vec = np.concatenate((float_vec,np.zeros(padding)))
         #print("fv4: ", len(float_vec))
 
-        #vec = float_vec
         vec = np.vectorize(lambda d: (d+self.c) * pow(2,self.m))(float_vec).astype(self.vector_dtype)
         
         vec[0] = mlp.n_iter_
@@ -364,7 +396,11 @@ class SA_ClientAgent(Agent):
             vec[x] = mlp.intercepts_[z].size
             #print(vec[x])
             x += 1
+        '''
+        
+        vec = np.vectorize(lambda d: (d+self.c) * pow(2,self.m))(float_vec).astype(self.vector_dtype)
 
+        
         
         # Find this client's neighbors: parse graph from PRG(PRF(iter, root_seed))
         self.neighbors_list = param.findNeighbors(param.root_seed, self.current_iteration, self.num_clients, self.id, self.neighborhood_size)
@@ -530,9 +566,9 @@ class SA_ClientAgent(Agent):
                                   "vector": vec,
                                   "enc_mi_shares": enc_mi_shares,
                                   "enc_pairwise": cipher_msg,
-                                  "layers": mlp.n_layers_,
-                                  "iter": mlp.n_iter_,
-                                  "out": mlp.n_outputs_,
+                                  "layers": 1, #mlp.n_layers_,
+                                  "iter": 1, # mlp.n_iter_,
+                                  "out": 1, # mlp.n_outputs_,
                                   }),
                          tag="comm_key_generation")
 

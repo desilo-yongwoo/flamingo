@@ -24,6 +24,11 @@ from util.crypto import ecchash
 from util.crypto.secretsharing import secret_int_to_points, points_to_secret_int
 
 from sklearn.neural_network import MLPClassifier
+import torch
+
+from util.load_data import load_data
+from util.target_network import Net
+from util.utils import train, test, DEVICE
 
 # parallel helper functions
 def parallel_mult(vec, coeff):
@@ -46,7 +51,7 @@ class SA_ServiceAgent(Agent):
                  msg_fwd_delay=1000000,
                  round_time=pd.Timedelta("10s"),
                  iterations=4,
-                 num_clients=128,
+                 num_clients=60,
                  neighborhood_size=1,
                  parallel_mode=1,
                  debug_mode=0,
@@ -671,7 +676,30 @@ class SA_ServiceAgent(Agent):
         nums = np.vectorize(lambda d: d * 1/rec)(final_sum)
         nums = np.vectorize(lambda d: (d/pow(2,self.m)) \
                             - self.c )(nums)
+        
+        # Modify this part to compare HARVEST with same dataset and model
 
+        network = Net().to(DEVICE)
+        network_dict = network.state_dict()
+
+        for layer in network_dict:
+            layer_flatten_size = network_dict[layer].cpu().view(-1).size(dim=0)
+            layer_to_upload = torch.tensor(nums[:layer_flatten_size], dtype=torch.float32).view(network_dict[layer].size()).to(DEVICE)
+            network_dict[layer] = layer_to_upload
+            nums = nums[layer_flatten_size:]
+
+        network.load_state_dict(network_dict)
+        _, test_data, n = load_data()
+        loss, acc = test(network, test_data, device=DEVICE)
+        
+        print(f"[Server] test loss, accuracy : {loss}, {acc}")
+        model_dict = network.state_dict()
+        global_model_vec = np.array([])
+        for layer in model_dict:
+            global_model_vec = np.concatenate((global_model_vec, np.array(model_dict[layer].cpu().view(-1))))
+        
+
+        '''*
         # use aggregation to set MLP classifier
         c_indx = []
         i_indx = []
@@ -703,7 +731,8 @@ class SA_ServiceAgent(Agent):
         mlp.intercepts_ = i_nums
         
         print("[Server] MLP SCORE: ", mlp.score(self.X_test,self.y_test))
-        
+        '''
+
         print()
         print("######## Iteration completion ########")
         print(f"[Server] finished iteration {self.current_iteration} at {currentTime + server_comp_delay}")
@@ -716,7 +745,7 @@ class SA_ServiceAgent(Agent):
                              Message({"msg": "REQ",
                                       "sender": 0,
                                       "output": 1,
-                                      "coefs": mlp.coefs_,
+                                      "coefs": global_model_vec,
                                       "ints": mlp.intercepts_,
                                       "n_iter": mlp.n_iter_,
                                       "n_layers": mlp.n_layers_,
